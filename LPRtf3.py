@@ -416,6 +416,9 @@ def train(a):
         if a=='train':
             for curr_epoch in range(num_epochs):
                 print("Epoch.......", curr_epoch)
+                if curr_epoch % 100 == 0:
+                    save_path = saver.save(session, "./tmp/model.ckpt", global_step=curr_epoch)
+                    print("Model saved in path: %s" % save_path)
                 train_cost = train_ler = 0
                 for batch in range(BATCHES):
                     start = time.time()
@@ -423,7 +426,7 @@ def train(a):
                     train_cost += c * BATCH_SIZE
                     seconds = time.time() - start
                     #print("Step:", steps, ", batch seconds:", seconds)
-
+                
                 train_cost /= TRAIN_SIZE
                 val_cs=0
                 val_ls =0
