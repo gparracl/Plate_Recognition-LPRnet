@@ -4,9 +4,10 @@ import time
 import cv2
 import os
 import random
+import re
 
 #训练最大轮次
-num_epochs = 300
+num_epochs = 1000
 
 #初始化学习速率
 INITIAL_LEARNING_RATE = 1e-3
@@ -19,7 +20,7 @@ REPORT_STEPS = 5000
 
 #训练集的数量
 BATCH_SIZE = 50
-TRAIN_SIZE = 7368
+TRAIN_SIZE = 8379
 BATCHES = TRAIN_SIZE//BATCH_SIZE
 test_num = 3
 
@@ -29,27 +30,16 @@ img_size = [94, 24]
 tl = None
 vl = None
 num_channels = 3
-label_len = 7
+label_len = 6
 
-CHARS = ['京', '沪', '津', '渝', '冀', '晋', '蒙', '辽', '吉', '黑',
-         '苏', '浙', '皖', '闽', '赣', '鲁', '豫', '鄂', '湘', '粤',
-         '桂', '琼', '川', '贵', '云', '藏', '陕', '甘', '青', '宁',
-         '新',
+CHARS = [
          '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-         'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K',
-         'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V',
-         'W', 'X', 'Y', 'Z','_'
+         'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K',
+         'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V',
+         'W', 'X', 'Y', 'Z'
          ]
-dict = {'A01':'京','A02':'津','A03':'沪','B02':'蒙',
-        'S01':'皖','S02':'闽','S03':'粤','S04':'甘',
-        'S05': '贵', 'S06': '鄂', 'S07': '冀', 'S08': '黑', 'S09': '湘',
-        'S10': '豫', 'S12': '吉', 'S13': '苏', 'S14': '赣', 'S15': '辽',
-        'S17': '川', 'S18': '鲁', 'S22': '浙',
-        'S30':'渝', 'S31':'晋', 'S32':'桂', 'S33':'琼', 'S34':'云', 'S35':'藏',
-        'S36':'陕','S37':'青', 'S38':'宁', 'S39':'新'}
 
 CHARS_DICT = {char:i for i, char in enumerate(CHARS)}
-
 NUM_CHARS = len(CHARS)
 
 
@@ -86,7 +76,7 @@ class TextImageGenerator:
             if '\u4e00' <= filename[0]<= '\u9fff':
                 label = filename[:7]
             else:
-                label = dict[filename[:3]] + filename[4:10]
+                label = filename.split('_')[1].split('.')[0]
             label = encode_label(label)
             self.labels.append(label)
             self._num_examples += 1
@@ -176,11 +166,11 @@ def decode_a_seq(indexes, spars_tensor):
 
 def small_basic_block(x,im,om):
     x = conv(x,im,int(om/4),ksize=[1,1])
-    x = tf.nn.relu(x)
+    #x = tf.nn.relu(x)
     x = conv(x,int(om/4),int(om/4),ksize=[3,1],pad='SAME')
-    x = tf.nn.relu(x)
+    #x = tf.nn.relu(x)
     x = conv(x,int(om/4),int(om/4),ksize=[1,3],pad='SAME')
-    x = tf.nn.relu(x)
+    #x = tf.nn.relu(x)
     x = conv(x,int(om/4),om,ksize=[1,1])
     return x
 
@@ -329,7 +319,7 @@ def train(a):
                                                DECAY_STEPS,
                                                LEARNING_RATE_DECAY_FACTOR,
                                                staircase=True)
-    logits, inputs, targets, seq_len = get_train_model(num_channels, label_len,BATCH_SIZE, img_size)
+    logits, inputs, targets, seq_len = get_train_model(num_channels, label_len, BATCH_SIZE, img_size)
     logits = tf.transpose(logits, (1, 0, 2))
     # tragets是一个稀疏矩阵
     loss = tf.nn.ctc_loss(labels=targets, inputs=logits, sequence_length=seq_len)
@@ -340,15 +330,33 @@ def train(a):
 
     # 前面说的划分块之后找每块的类属概率分布，ctc_beam_search_decoder方法,是每次找最大的K个概率分布
     # 还有一种贪心策略是只找概率最大那个，也就是K=1的情况ctc_ greedy_decoder
-    decoded, log_prob = tf.nn.ctc_beam_search_decoder(logits, seq_len, merge_repeated=False)
+    decoded, log_prob = tf.nn.ctc_beam_search_decoder(logits, seq_len, merge_repeated=False, top_paths=10)
 
     acc = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32), targets))
-
     init = tf.global_variables_initializer()
+
+    def get_valid_label(index):
+        pass
+        #for path in beam_search_paths
 
     def report_accuracy(decoded_list, test_targets):
         original_list = decode_sparse_tensor(test_targets)
-        detected_list = decode_sparse_tensor(decoded_list)
+        detected_list = []#decode_sparse_tensor(decoded_list[0])
+        
+        batch_size = len(decoded_list[0])
+        #n_paths = len(decoded_list)
+
+        beam_search_paths = [decode_sparse_tensor(d) for d in decoded_list]
+        pat = re.compile(r"(?:^[A-Z]{2}[0-9]{4}$|^[A-Z]{4}[0-9]{2}$)")
+
+        label_slice = lambda index: [path[index] for path in beam_search_paths if bool(pat.match(''.join(path[index])))]
+        for index, label in enumerate(beam_search_paths[0]):
+            valid_labels = label_slice(index)
+            if valid_labels:
+                detected_list.append(label_slice(index)[0])
+            else:
+                detected_list.append(beam_search_paths[0][index])
+
         true_numer = 0
 
         if len(original_list) != len(detected_list):
@@ -371,7 +379,7 @@ def train(a):
                         targets: test_targets,
                         seq_len: test_seq_len}
             st =time.time()
-            dd= session.run(decoded[0], test_feed)
+            dd= session.run(decoded, test_feed)
             tim = time.time() -st
             print('time:%s'%tim)
             report_accuracy(dd, test_targets)
@@ -403,8 +411,7 @@ def train(a):
 
         b_loss, b_targets, b_logits, b_seq_len, b_cost, steps, _ = session.run(
             [loss, targets, logits, seq_len, cost, global_step, optimizer], feed)
-
-        #print(b_cost, steps)
+   
         if steps > 0 and steps % REPORT_STEPS == 0:
             do_report(val_gen,test_num)
             saver.save(session, "./model/LPRtf3.ckpt", global_step=steps)
@@ -416,9 +423,6 @@ def train(a):
         if a=='train':
             for curr_epoch in range(num_epochs):
                 print("Epoch.......", curr_epoch)
-                if curr_epoch % 100 == 0:
-                    save_path = saver.save(session, "./tmp/model.ckpt", global_step=curr_epoch)
-                    print("Model saved in path: %s" % save_path)
                 train_cost = train_ler = 0
                 for batch in range(BATCHES):
                     start = time.time()
@@ -444,8 +448,8 @@ def train(a):
                 print(log.format(curr_epoch + 1, num_epochs, steps, train_cost, train_ler, val_cs/test_num, val_ls/test_num,
                                  time.time() - start, lr))
         if a =='test':
-            testi='valid'
-            saver.restore(session, './model8.24best/LPRtf3.ckpt-25000')
+            testi='train'
+            saver.restore(session, './model/LPRtf3.ckpt-5000')
             test_gen = TextImageGenerator(img_dir=testi,
                                            label_file=None,
                                            batch_size=BATCH_SIZE,
@@ -456,5 +460,6 @@ def train(a):
 
 
 if __name__ == "__main__":
-        a = input('train or test:')
+        #a = input('train or test:')
+        a = 'train'
         train(a)
