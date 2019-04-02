@@ -1,5 +1,7 @@
 import tensorflow as tf
+from keras.preprocessing.image import ImageDataGenerator
 import numpy as np
+import pandas as pd
 import time
 import cv2
 import os
@@ -69,51 +71,37 @@ class TextImageGenerator:
 
     def init(self):
         self.labels = []
-        fs = os.listdir(self._img_dir)
-        for filename in fs:
-                self.filenames.append(filename)
+        self.filenames = np.array(os.listdir(self._img_dir))
         for filename in self.filenames:
-            if '\u4e00' <= filename[0]<= '\u9fff':
-                label = filename[:7]
-            else:
-                label = filename.split('_')[1].split('.')[0]
-            label = encode_label(label)
+            label = encode_label(filename.split('_')[1].split('.')[0])
             self.labels.append(label)
             self._num_examples += 1
         self.labels = np.float32(self.labels)
 
+        df = pd.DataFrame({'filename': os.listdir('./train')})
+        label = df['filename'].apply(lambda row: encode_label(row.split('_')[1].split('.')[0])).apply(pd.Series)
+        label = label.rename(columns = lambda x : 'char_' + str(x))
+
+        df = pd.concat([df[:], label[:]], axis=1)
+
+        self.train_datagen = ImageDataGenerator(
+            rotation_range=10,
+            shear_range=0.2,
+            brightness_range=[0.5, 1.5])
+
+        self.train_generator = self.train_datagen.flow_from_dataframe(df, 
+                                                    directory='./train',
+                                                    x_col='filename', 
+                                                    y_col=['char_{}'.format(i) for i in range(6)], 
+                                                    class_mode='other',
+                                                    target_size=(self._img_h, self._img_w),
+                                                    batch_size=self._batch_size)
+
     def next_batch(self):
-        # Shuffle the data
-        if self._next_index == 0:
-            perm = np.arange(self._num_examples)
-            np.random.shuffle(perm)
-            self._filenames = [self.filenames[i] for i in perm]
-            self._labels = self.labels[perm]
-
-        batch_size = self._batch_size
-        start = self._next_index
-        end = self._next_index + batch_size
-        if end > self._num_examples:
-            self._next_index = 0
-            start = self._next_index
-            end = self._next_index + batch_size
-            self._num_epoches += 1
-        else:
-            self._next_index = end
-        images = np.zeros([batch_size, self._img_h, self._img_w, self._num_channels])
-        # labels = np.zeros([batch_size, self._label_len])
-
-        for j, i in enumerate(range(start, end)):
-            fname = self._filenames[i]
-            img = cv2.imread(os.path.join(self._img_dir, fname))
-            img = cv2.resize(img, (self._img_w, self._img_h), interpolation=cv2.INTER_CUBIC)
-            images[j, ...] = img
+        images, labels = next(self.train_generator)
         images = np.transpose(images, axes=[0, 2, 1, 3])
-        labels = self._labels[start:end, ...]
-        targets = [np.asarray(i) for i in labels]
-        sparse_labels = sparse_tuple_from(targets)
-        # input_length = np.zeros([batch_size, 1])
 
+        sparse_labels = sparse_tuple_from(list(labels))
         seq_len = np.ones(self._batch_size) * 24
         return images, sparse_labels, seq_len
 
@@ -406,12 +394,10 @@ def train(a):
 
     def do_batch(train_gen,val_gen):
         train_inputs, train_targets, train_seq_len = train_gen.next_batch()
-
         feed = {inputs: train_inputs, targets: train_targets, seq_len: train_seq_len}
 
-        b_loss, b_targets, b_logits, b_seq_len, b_cost, steps, _ = session.run(
-            [loss, targets, logits, seq_len, cost, global_step, optimizer], feed)
-   
+        b_loss, b_acc, b_targets, b_logits, b_seq_len, b_cost, steps, _ = session.run(
+            [loss, acc, targets, logits, seq_len, cost, global_step, optimizer], feed)
         if steps > 0 and steps % REPORT_STEPS == 0:
             do_report(val_gen,test_num)
             saver.save(session, "./model/LPRtf3.ckpt", global_step=steps)
@@ -424,9 +410,9 @@ def train(a):
             for curr_epoch in range(num_epochs):
                 print("Epoch.......", curr_epoch)
                 train_cost = train_ler = 0
-                for batch in range(BATCHES):
+                for batch in range(3):
                     start = time.time()
-                    c, steps = do_batch(train_gen,val_gen)
+                    c, steps = do_batch(train_gen, val_gen)
                     train_cost += c * BATCH_SIZE
                     seconds = time.time() - start
                     #print("Step:", steps, ", batch seconds:", seconds)
@@ -444,11 +430,11 @@ def train(a):
                     val_cs+=val_cost
                     val_ls+=val_ler
 
-                log = "Epoch {}/{}, steps = {}, train_cost = {:.3f}, train_ler = {:.3f}, val_cost = {:.3f}, val_ler = {:.3f}, time = {:.3f}s, learning_rate = {}"
+                log = "Epoch {}/{}, steps = {}, train_cost = {:.6f}, train_ler = {:.3f}, val_cost = {:.6f}, val_ler = {:.3f}, time = {:.3f}s, learning_rate = {}"
                 print(log.format(curr_epoch + 1, num_epochs, steps, train_cost, train_ler, val_cs/test_num, val_ls/test_num,
                                  time.time() - start, lr))
         if a =='test':
-            testi='train'
+            testi='valid'
             saver.restore(session, './model/LPRtf3.ckpt-5000')
             test_gen = TextImageGenerator(img_dir=testi,
                                            label_file=None,
